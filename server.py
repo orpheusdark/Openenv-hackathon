@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from pydantic import BaseModel
 
 from env import EmailTriageEnv
@@ -28,9 +28,11 @@ def root() -> Dict[str, str]:
 
 
 @app.post("/reset")
-async def reset(req: ResetRequest) -> Dict[str, Any]:
-    if ENV.task_id != req.task_id:
-        ENV.switch_task(req.task_id)
+async def reset(payload: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str, Any]:
+    task_value = payload.get("task_id", TaskId.easy)
+    task_id = TaskId(task_value) if not isinstance(task_value, TaskId) else task_value
+    if ENV.task_id != task_id:
+        ENV.switch_task(task_id)
     obs = await ENV.reset()
     return {"observation": obs.model_dump(mode="json")}
 
