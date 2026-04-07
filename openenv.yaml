@@ -2,7 +2,7 @@ name: email-triage-response-openenv
 version: 1.0.0
 description: Production-grade email triage and response environment for RL benchmarking.
 author: openenv_hackathon
-entrypoint: server.py
+entrypoint: server/app.py
 framework: fastapi
 language: python
 python_version: "3.11"
