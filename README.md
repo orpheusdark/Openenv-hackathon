@@ -1,3 +1,12 @@
+---
+title: OpenEnv Email Triage & Response Environment
+emoji: 📧
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # OpenEnv Email Triage & Response Environment
 
 ## Environment Purpose
