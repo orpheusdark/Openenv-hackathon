@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from openai import OpenAI
 
@@ -83,83 +83,102 @@ def _model_action(client: OpenAI, model_name: str, email: Dict[str, str]) -> Dic
         return _fallback(email["subject"], email["body"])
 
 
+async def _run_task(
+    env: Env,
+    client: OpenAI,
+    model_name: str,
+    image_name: str,
+    task_id: TaskId,
+) -> Tuple[float, int]:
+    print(f"[START] task={task_id.value} env={image_name} model={model_name}")
+
+    rewards: List[float] = []
+    success = True
+    steps = 0
+
+    try:
+        env.task_id = task_id
+        observation = await env.reset()
+
+        for email in observation.emails:
+            proposal = _model_action(
+                client,
+                model_name,
+                {
+                    "id": email.id,
+                    "subject": email.subject,
+                    "body": email.body,
+                    "sender": email.sender,
+                    "timestamp": email.timestamp.isoformat(),
+                },
+            )
+            action = Action(
+                email_id=email.id,
+                classification=proposal["classification"],
+                priority=proposal["priority"],
+                response_text=proposal.get("response_text") or None,
+            )
+            _, reward, done, info = await env.step(action)
+            reward_value = float(reward.step_reward)
+            rewards.append(reward_value)
+            steps += 1
+
+            action_str = json.dumps(action.model_dump(mode="json"), ensure_ascii=True, separators=(",", ":"))
+            step_error = info.get("error") if isinstance(info, dict) else None
+            step_error_str = json.dumps(step_error) if step_error else "null"
+            done_str = "true" if done else "false"
+            print(
+                f"[STEP] step={steps} action={action_str} reward={reward_value:.2f} "
+                f"done={done_str} error={step_error_str}"
+            )
+
+            if done:
+                break
+    except Exception as exc:
+        success = False
+        if steps == 0:
+            print(f"[STEP] step=0 action=null reward=0.00 done=true error={json.dumps(str(exc))}")
+        else:
+            print(f"[STEP] step={steps + 1} action=null reward=0.00 done=true error={json.dumps(str(exc))}")
+
+    score = float(env.grade()) if success else 0.0
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_str = "true" if success else "false"
+    print(f"[END] success={success_str} steps={steps} score={score:.4f} rewards={rewards_str}")
+    return score, steps
+
+
 async def run_inference() -> Dict[str, float]:
-    API_BASE_URL = _required_env("API_BASE_URL")
-    MODEL_NAME = _required_env("MODEL_NAME")
+    API_BASE_URL = os.getenv("API_BASE_URL", "").strip() or "https://api.openai.com/v1"
+    MODEL_NAME = os.getenv("MODEL_NAME", "").strip() or "gpt-4o-mini"
     HF_TOKEN = _required_env("HF_TOKEN")
-    IMAGE_NAME = _required_env("IMAGE_NAME")
+    IMAGE_NAME = os.getenv("IMAGE_NAME", "").strip() or "email-triage-openenv"
 
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     scores: Dict[str, float] = {}
 
-    for task_id in [TaskId.easy, TaskId.medium, TaskId.hard]:
+    env = None
+    try:
         env = await Env.from_docker_image(IMAGE_NAME)
-        env.task_id = task_id
-        observation = await env.reset()
-
-        print(f"[START] task={task_id.value} env={IMAGE_NAME} model={MODEL_NAME}")
-
-        rewards: List[float] = []
-        success = True
-        error_msg = "null"
-        steps = 0
-
-        for email in observation.emails:
+        for task_id in [TaskId.easy, TaskId.medium, TaskId.hard]:
+            score, _steps = await _run_task(env, client, MODEL_NAME, IMAGE_NAME, task_id)
+            scores[task_id.value] = round(score, 4)
+    except Exception as exc:
+        print(f"[START] task=unknown env={IMAGE_NAME} model={MODEL_NAME}")
+        print(f"[STEP] step=0 action=null reward=0.00 done=true error={json.dumps(str(exc))}")
+        print("[END] success=false steps=0 score=0.0000 rewards=")
+    finally:
+        if env is not None:
             try:
-                proposal = _model_action(
-                    client,
-                    MODEL_NAME,
-                    {
-                        "id": email.id,
-                        "subject": email.subject,
-                        "body": email.body,
-                        "sender": email.sender,
-                        "timestamp": email.timestamp.isoformat(),
-                    },
-                )
-                action = Action(
-                    email_id=email.id,
-                    classification=proposal["classification"],
-                    priority=proposal["priority"],
-                    response_text=proposal.get("response_text") or None,
-                )
-                _, reward, done, info = await env.step(action)
-                reward_value = float(reward.step_reward)
-                rewards.append(reward_value)
-                steps += 1
-
-                action_str = json.dumps(action.model_dump(mode="json"), ensure_ascii=True, separators=(",", ":"))
-                step_error = info.get("error") if isinstance(info, dict) else None
-                step_error_str = json.dumps(step_error) if step_error else "null"
-                done_str = "true" if done else "false"
-                print(
-                    f"[STEP] step={steps} action={action_str} reward={reward_value:.2f} "
-                    f"done={done_str} error={step_error_str}"
-                )
-
-                if done:
-                    break
-            except Exception as exc:
-                success = False
-                error_msg = json.dumps(str(exc))
-                print(
-                    f"[STEP] step={steps + 1} action=null reward=0.00 done=true error={error_msg}"
-                )
-                break
-
-        score = env.grade() if success else 0.0
-        scores[task_id.value] = round(float(score), 4)
-
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-        success_str = "true" if success else "false"
-        print(
-            f"[END] success={success_str} steps={steps} score={float(score):.4f} rewards={rewards_str}"
-        )
-
-        await env.close()
+                await env.close()
+            except Exception:
+                pass
 
     return scores
 
 
 if __name__ == "__main__":
-    asyncio.run(run_inference())
+    try:
+        asyncio.run(run_inference())
+    except Exception as exc:
+        pass
