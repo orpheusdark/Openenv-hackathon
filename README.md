@@ -7,7 +7,7 @@ sdk: docker
 pinned: false
 ---
 
-# OpenEnv Email Triage & Response Environment
+# OpenEnv Email Triage & Response Environment (Round 1)
 
 ## Environment Purpose
 
